@@ -389,3 +389,310 @@ function renderAnswer(slot, repo, ev) {
     <span style="margin-left:auto">${esc(facts)}</span></div></div>`;
 }
 
+/* ------------------------------------------------------------- compare */
+function fillCompareQuestions() {
+  const sel = $("#compareQuestions");
+  const qs = state.questions.filter((q) => q.repo === state.repo);
+  sel.innerHTML = `<option value="">${qs.length ? "Test-set questions" : "No test-set questions for this repo"}</option>`
+    + qs.map((q) => `<option value="${esc(q.question)}">${esc(q.id)}: ${esc(q.question)}</option>`).join("");
+}
+$("#compareQuestions").addEventListener("change", (e) => {
+  if (!e.target.value) return;
+  $("#compareQuery").value = e.target.value;
+  $("#compareForm").requestSubmit();
+});
+$("#compareForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#compareQuery").value.trim();
+  if (q.length < 2) return;
+  const grid = $("#compareGrid");
+  grid.innerHTML = `<div class="working"><span class="spinner"></span><span>Searching 8 indexes</span></div>`;
+  $("#compareGold").innerHTML = "";
+  try {
+    const data = await api(`/api/repos/${encodeURIComponent(state.repo)}/compare?q=${encodeURIComponent(q)}&k=5`);
+    renderCompare(data);
+  } catch (err) {
+    grid.innerHTML = `<div class="answer error">${esc(err.message)}</div>`;
+  }
+});
+function renderCompare(data) {
+  const repo = state.repo;
+  $("#compareGold").innerHTML = data.gold.length
+    ? `Expected code: ${data.gold.map((g) => citeChip(repo, g.path, g.start, g.end) + ` <span>${esc(g.symbol)}</span>`).join(", ")}`
+    : "Free-form question: no expected answer to score against.";
+  const cells = [];
+  for (const ch of state.config.chunkers) {
+    for (const rt of state.config.retrievers) {
+      const key = `${ch}+${rt}`;
+      const hits = data.results[key];
+      const color = ch === "ast" ? "var(--series-ast)" : "var(--series-fixed)";
+      let verdict = "Top 5 results", ok = false;
+      if (data.errors[key]) verdict = `Unavailable: ${data.errors[key]}`;
+      else if (data.gold.length) {
+        const r = hits.findIndex((h) => h.hit);
+        ok = r >= 0;
+        verdict = ok ? `First correct chunk at rank ${r + 1}` : "No correct chunk in the top 5";
+      }
+      const items = (hits || []).map((h) => `
+        <li class="${h.hit ? "hit" : ""}" data-path="${esc(h.path)}" data-start="${h.start_line}" data-end="${h.end_line}" title="${esc(h.path)}:${h.start_line}-${h.end_line} (score ${h.score})">
+          <span class="rk">${h.rank}</span>
+          <span><span class="loc">${esc(basename(h.path))}:${h.start_line}–${h.end_line}</span><br><span class="sym">${esc(h.symbol || h.kind)}</span></span>
+        </li>`).join("");
+      cells.push(`<div class="cell"><h3><span class="swatch" style="background:${color}"></span>${LABELS[ch]} + ${LABELS[rt]}</h3>
+        <p class="verdict${ok ? " ok" : ""}">${esc(verdict)}</p><ol>${items}</ol></div>`);
+    }
+  }
+  $("#compareGrid").innerHTML = cells.join("");
+}
+$("#compareGrid").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-path]");
+  if (li) openViewer(state.repo, li.dataset.path, +li.dataset.start, +li.dataset.end);
+});
+
+/* ---------------------------------------------------------------- eval */
+async function renderEval(force = false) {
+  const body = $("#evalBody");
+  if (!state.evalCache || force) {
+    body.innerHTML = `<div class="working"><span class="spinner"></span><span>Loading results</span></div>`;
+    try { state.evalCache = await api("/api/eval/results"); } catch (err) { body.innerHTML = esc(err.message); return; }
+  }
+  const { retrieval, answers } = state.evalCache;
+  if (!retrieval && !answers) {
+    body.innerHTML = `<div class="empty"><h2 style="margin-top:0">No results yet</h2>
+      <p>Run the evaluation from the project folder, then reload this page:</p>
+      <pre>python -m cqa eval retrieval      # Recall@k for every chunking + embedding pair (no LLM needed)
+python -m cqa eval answers        # RAG vs agent, LLM judge, file-location accuracy
+python -m cqa eval report         # writes results/REPORT.md</pre></div>`;
+    return;
+  }
+  let html = "";
+  if (retrieval) html += retrievalHtml(retrieval);
+  if (answers) html += answersHtml(answers);
+  body.innerHTML = html;
+  if (retrieval) drawRecallChart(retrieval, 5);
+}
+
+function heat(v, best) {
+  return `<td class="num heat${best ? " best" : ""}" style="--a:${(0.06 + 0.32 * v).toFixed(2)}"><span>${pct(v)}</span></td>`;
+}
+function retrievalHtml(r) {
+  const cfgs = r.configs;
+  const names = Object.keys(cfgs).sort((a, b) => cfgs[b]["recall@5"] - cfgs[a]["recall@5"]);
+  const best = names[0];
+  const findings = [];
+  if (best) findings.push(`Best index: <strong>${LABELS[best.split("+")[0]]} + ${LABELS[best.split("+")[1]]}</strong>, finding the right code in the top 5 for ${pct(cfgs[best]["recall@5"])} of questions.`);
+  const deltas = (a, b) => state.config.retrievers.filter((x) => cfgs[`${a}+${x}`] && cfgs[`${b}+${x}`])
+    .map((x) => cfgs[`${a}+${x}`]["recall@5"] - cfgs[`${b}+${x}`]["recall@5"]);
+  const astD = deltas("ast", "fixed");
+  if (astD.length) {
+    const m = astD.reduce((s, x) => s + x, 0) / astD.length;
+    findings.push(`Function/class chunks vs fixed windows: ${m >= 0 ? "+" : ""}${Math.round(100 * m)} points Recall@5 on average across retrievers.`);
+  }
+  const ce = ["ast", "fixed"].filter((c) => cfgs[`${c}+code`] && cfgs[`${c}+general`])
+    .map((c) => `${LABELS[c].toLowerCase()} ${pct(cfgs[`${c}+code`]["recall@5"])} vs ${pct(cfgs[`${c}+general`]["recall@5"])}`);
+  if (ce.length) findings.push(`Code model vs general model (Recall@5): ${ce.join("; ")}.`);
+  const note = r.embed_backend === "hash"
+    ? `<p class="note">These numbers come from the offline hashing embedder, not the real models. Run <code>python -m cqa eval retrieval</code> with internet access for the final results.</p>` : "";
+  const ks = r.ks;
+  const rows = names.map((n) => {
+    const s = cfgs[n];
+    const [ch, rt] = n.split("+");
+    return `<tr><td><span class="swatch" style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;background:${ch === "ast" ? "var(--series-ast)" : "var(--series-fixed)"}"></span>${LABELS[ch]} + ${LABELS[rt]}</td>`
+      + ks.map((k) => heat(s[`recall@${k}`], n === best)).join("")
+      + `<td class="num">${s["mrr@10"].toFixed(3)}</td>${heat(s["file_acc@1"], false)}</tr>`;
+  }).join("");
+  const repos = Object.keys(cfgs[best]?.by_repo || {});
+  const repoRows = names.map((n) => `<tr><td>${LABELS[n.split("+")[0]]} + ${LABELS[n.split("+")[1]]}</td>${repos.map((rp) => heat(cfgs[n].by_repo[rp]?.["recall@5"] ?? 0, false)).join("")}</tr>`).join("");
+  const emb = r.embedders || {};
+  return `
+    <h2>Retrieval</h2>${note}
+    <ul class="findings">${findings.map((f) => `<li>${f}</li>`).join("")}</ul>
+    <div class="chart-card" style="margin:14px 0">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <h3 style="margin:0">Recall@<span id="chartK">5</span> by retriever</h3>
+        <div class="seg" id="kSeg">${ks.map((k) => `<button type="button" data-k="${k}" aria-checked="${k === 5}">k = ${k}</button>`).join("")}</div>
+        <div class="legend" style="margin-left:auto"><span><i style="background:var(--series-ast)"></i>Function chunks</span><span><i style="background:var(--series-fixed)"></i>Fixed windows</span></div>
+      </div>
+      <div id="recallChart"></div>
+    </div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Index</th>${ks.map((k) => `<th>Recall@${k}</th>`).join("")}<th>MRR@10</th><th>Top-1 file</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="hint">Code model: <code>${esc(emb.code?.model || "")}</code>. General model: <code>${esc(emb.general?.model || "")}</code>. A chunk counts as correct when it is in the expected file and covers at least half of the expected span (or the span covers half of it).</p>
+    <h3>Recall@5 by repository</h3>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Index</th>${repos.map((x) => `<th>${esc(x)}</th>`).join("")}</tr></thead><tbody>${repoRows}</tbody></table></div>`;
+}
+
+function drawRecallChart(r, k) {
+  const el = $("#recallChart");
+  if (!el) return;
+  $("#chartK").textContent = k;
+  const rets = state.config.retrievers.filter((x) => r.configs[`ast+${x}`] || r.configs[`fixed+${x}`]);
+  const W = 720, H = 240, L = 40, B = 28, T = 18, plotH = H - B - T, groupW = (W - L) / rets.length, barW = Math.min(46, groupW / 3.2);
+  const y = (v) => T + plotH * (1 - v);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Recall at ${k} for each retriever, function chunks versus fixed windows">`;
+  svg += `<g class="grid axis">${[0, 0.25, 0.5, 0.75, 1].map((v) => `<line x1="${L}" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${v * 100}%</text>`).join("")}</g>`;
+  rets.forEach((rt, i) => {
+    const cx = L + groupW * i + groupW / 2;
+    [["ast", -1], ["fixed", 1]].forEach(([ch, side]) => {
+      const s = r.configs[`${ch}+${rt}`];
+      if (!s) return;
+      const v = s[`recall@${k}`];
+      const x = cx + (side < 0 ? -barW - 1 : 1);
+      const h = Math.max(0, y(0) - y(v));
+      const rr = Math.min(4, h);
+      svg += `<path class="bar-${ch}" data-tip="${LABELS[ch]} + ${LABELS[rt]}: Recall@${k} ${pct(v)}" d="M${x},${y(0)} v${-(h - rr)} q0,${-rr} ${rr},${-rr} h${barW - 2 * rr} q${rr},0 ${rr},${rr} v${h - rr} z"/>`;
+      svg += `<text class="val" x="${x + barW / 2}" y="${y(v) - 5}" text-anchor="middle">${pct(v)}</text>`;
+    });
+    svg += `<text class="lbl" x="${cx}" y="${H - 8}" text-anchor="middle">${LABELS[rt]}</text>`;
+  });
+  el.innerHTML = svg + "</svg>";
+  $$("#kSeg button").forEach((b) => (b.onclick = () => {
+    $$("#kSeg button").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+    drawRecallChart(r, +b.dataset.k);
+  }));
+}
+// chart tooltips
+(() => {
+  let tip = null;
+  document.addEventListener("mousemove", (e) => {
+    const t = e.target.closest?.("[data-tip]");
+    if (!t) { if (tip) tip.hidden = true; return; }
+    if (!tip) { tip = document.createElement("div"); tip.className = "chart-tip"; document.body.append(tip); }
+    tip.hidden = false;
+    tip.textContent = t.dataset.tip;
+    tip.style.left = `${e.clientX + 12}px`;
+    tip.style.top = `${e.clientY - 30}px`;
+  });
+})();
+
+function answersHtml(a) {
+  const modes = Object.keys(a.modes);
+  const offline = /offline|heuristic/.test(a.llm + a.judge);
+  const rows = modes.map((m) => {
+    const s = a.modes[m];
+    return `<tr><td>${LABELS[m] || m}</td>${heat(s.judge_correct)}<td class="num">${s.judge_score.toFixed(2)}</td>${heat(s.file_acc)}${heat(s.line_acc)}${heat(s.top_file_acc)}<td class="num">${s.avg_steps.toFixed(1)}</td><td class="num">${s.avg_seconds.toFixed(1)}s</td></tr>`;
+  }).join("");
+  const groupTable = (key, title) => {
+    const groups = [...new Set(modes.flatMap((m) => Object.keys(a.modes[m][key])))].sort();
+    return `<div><h3>${title}</h3><div class="table-wrap"><table class="data"><thead><tr><th>Mode</th>${groups.map((g) => `<th>${esc(g)}</th>`).join("")}</tr></thead><tbody>
+      ${modes.map((m) => `<tr><td>${LABELS[m] || m}</td>${groups.map((g) => heat(a.modes[m][key][g]?.judge_correct ?? 0)).join("")}</tr>`).join("")}
+      </tbody></table></div></div>`;
+  };
+  const byId = {};
+  for (const r of a.rows) (byId[r.id] ||= { id: r.id, repo: r.repo, question: r.question, gold: r.gold, modes: {} }).modes[r.mode] = r;
+  const qrows = Object.values(byId).map((q) => `
+    <tr class="qrow" data-id="${esc(q.id)}"><td>${esc(q.id)}</td><td style="text-align:left;white-space:normal">${esc(q.question)}</td>
+    ${modes.map((m) => { const r = q.modes[m]; if (!r) return "<td>-</td><td>-</td>";
+      return `<td class="num">${r.judge.correct ? '<span class="mark-ok">✓</span>' : '<span class="mark-bad">✗</span>'} ${r.judge.score}</td><td class="num">${r.cite.file_hit ? '<span class="mark-ok">✓</span>' : '<span class="mark-bad">✗</span>'}</td>`; }).join("")}</tr>`).join("");
+  state.evalRows = byId;
+  return `
+    <h2>Answers</h2>
+    ${offline ? `<p class="note">Produced in offline mode, so the judge is a keyword heuristic. Add an LLM key to <code>.env</code> and run <code>python -m cqa eval answers</code> for the LLM-as-Judge scores.</p>` : ""}
+    <p class="hint">Answer model <code>${esc(a.llm)}</code>, judge <code>${esc(a.judge)}</code>, index <code>${esc(a.index)}</code>, ${a.n_questions} questions.</p>
+    <div class="table-wrap"><table class="data"><thead><tr><th>Mode</th><th>Judged correct</th><th>Judge score (1-5)</th><th>Cites right file</th><th>Cites right lines</th><th>First citation right</th><th>Tool calls</th><th>Time</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <div class="two-col">${groupTable("by_repo", "Judged correct by repository")}${groupTable("by_type", "Judged correct by question type")}</div>
+    <h3>Every question</h3>
+    <p class="hint">Select a row to read the answers, the judge's reasoning and the expected code.</p>
+    <div class="table-wrap"><table class="data" id="qtable"><thead><tr><th>ID</th><th style="text-align:left">Question</th>${modes.map((m) => `<th>${LABELS[m] || m}: judge</th><th>file</th>`).join("")}</tr></thead><tbody>${qrows}</tbody></table></div>`;
+}
+document.addEventListener("click", (e) => {
+  const tr = e.target.closest?.(".qrow");
+  if (!tr || e.target.closest(".cite")) return;
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("qdetail")) { next.remove(); return; }
+  const q = state.evalRows[tr.dataset.id];
+  const cols = tr.children.length;
+  const parts = Object.entries(q.modes).map(([m, r]) => `
+    <p><strong>${LABELS[m] || m}</strong>: judge ${r.judge.score}/5 - ${esc(r.judge.reason)}</p>
+    <div class="answer">${renderMarkdown(r.answer, q.repo, r.citations)}</div>`).join("");
+  const gold = q.gold.map((g) => citeChip(q.repo, g.path, g.start, g.end) + ` ${esc(g.symbol)}`).join(", ");
+  const row = document.createElement("tr");
+  row.className = "qdetail";
+  row.innerHTML = `<td colspan="${cols}"><p>Expected code: ${gold}</p>${parts}</td>`;
+  tr.after(row);
+});
+
+/* --------------------------------------------------------------- repos */
+async function loadRepos() {
+  state.repos = await api("/api/repos");
+  renderRepoSelect();
+}
+function renderRepos() {
+  const list = $("#repoList");
+  list.innerHTML = state.repos.map((r) => {
+    const idx = r.indexes || {};
+    const pills = [];
+    pills.push(`<span class="pill ${r.cloned ? "ok" : "missing"}">${r.cloned ? `Cloned at ${esc(r.commit || r.ref)}` : "Not cloned"}</span>`);
+    for (const ch of state.config.chunkers) {
+      const i = idx[ch];
+      pills.push(`<span class="pill ${i ? "ok" : "missing"}">${LABELS[ch]}${i ? `: ${i.n_chunks} chunks` : ": not built"}</span>`);
+    }
+    for (const em of Object.keys(state.config.embedders)) {
+      const has = Object.values(idx).some((i) => i.dense.includes(em));
+      pills.push(`<span class="pill ${has ? "ok" : "missing"}">${LABELS[em]} embeddings</span>`);
+    }
+    return `<div class="repo">
+      <div><span class="name">${esc(r.name)}</span> <a href="${esc(r.url)}" target="_blank" rel="noopener" class="desc">${esc(r.url.replace("https://github.com/", ""))}${r.ref ? "@" + esc(r.ref) : ""}</a>
+      ${r.eval_repo ? '<span class="tag">test set</span>' : ""}<div class="desc">${esc(r.description || "")}</div></div>
+      <button class="secondary" data-index="${esc(r.name)}">Build indexes</button>
+      <div class="facts">${pills.join("")}</div></div>`;
+  }).join("");
+}
+$("#repoList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-index]");
+  if (!b) return;
+  b.disabled = true;
+  try { trackJob(await api(`/api/repos/${encodeURIComponent(b.dataset.index)}/index`, { method: "POST" })); }
+  catch (err) { toast(err.message); b.disabled = false; }
+});
+$("#addRepoForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const job = await api("/api/repos", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: $("#repoUrl").value.trim(), ref: $("#repoRef").value.trim() }),
+    });
+    $("#repoUrl").value = "";
+    $("#repoRef").value = "";
+    trackJob(job);
+  } catch (err) { toast(err.message); }
+});
+function trackJob(job) {
+  const box = document.createElement("div");
+  box.className = "job";
+  $("#jobs").prepend(box);
+  const tick = async () => {
+    try { job = await api(`/api/jobs/${job.id}`); } catch (_) { return; }
+    const p = job.total ? Math.round((100 * job.done) / job.total) : (job.status === "done" ? 100 : 4);
+    box.classList.toggle("error", job.status === "error");
+    const label = job.status === "done" ? `Indexed ${job.repo}. You can ask questions about it now.`
+      : job.status === "error" ? `Indexing ${job.repo} failed: ${job.message}`
+      : `${job.repo}: ${job.stage || "starting"}${job.total ? ` (${job.done}/${job.total})` : ""}`;
+    box.innerHTML = `<div>${esc(label)}</div>${job.status === "error" ? "" : `<div class="bar"><div style="width:${p}%"></div></div>`}`;
+    if (job.status === "done" || job.status === "error") {
+      await loadRepos();
+      renderRepos();
+      if (job.status === "done") { state.repo = job.repo; renderRepoSelect(); renderExamples(); fillCompareQuestions(); }
+      if (job.status === "done") setTimeout(() => box.remove(), 6000);
+      return;
+    }
+    setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+/* ---------------------------------------------------------------- boot */
+(async function boot() {
+  try {
+    [state.config, state.questions] = await Promise.all([api("/api/config"), api("/api/eval/questions")]);
+    await loadRepos();
+    renderModelStatus();
+    renderExamples();
+    fillCompareQuestions();
+    showTab(location.hash.slice(1) || "ask");
+  } catch (err) {
+    document.querySelector("main").innerHTML = `<div class="answer error"><p><strong>The server did not respond.</strong> Start it with <code>python -m cqa serve</code> and reload. (${esc(err.message)})</p></div>`;
+  }
+})();
