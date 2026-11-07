@@ -1,0 +1,152 @@
+/* Codebase QA - one idea carries the design: code is read like a marked-up
+   printout. Everything is quiet slate on paper; the only loud thing is the
+   highlighter band over the exact lines an answer cites. */
+
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --ink: #18202b;
+  --ink-2: #444d5a;
+  --muted: #6b7380;
+  --line: #dfe3e8;
+  --line-soft: #eceef2;
+  --accent: #0b6e58;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2f1ec;
+  --mark: #fff0b0;
+  --mark-edge: #e9bf2a;
+  --ok: #157347;
+  --ok-soft: #e3f4ea;
+  --bad: #b42318;
+  --bad-soft: #fdecea;
+  --series-ast: #008a6e;
+  --series-fixed: #c0661d;
+  --code-bg: #fbfbfc;
+  --tok-kw: #7a3db8;
+  --tok-str: #1a6b39;
+  --tok-com: #8a919c;
+  --tok-num: #a3510f;
+  --tok-def: #1f4fb0;
+  --font: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --viewer-w: min(46vw, 760px);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1217;
+    --panel: #161a21;
+    --ink: #e5e8ed;
+    --ink-2: #b6bdc8;
+    --muted: #8b94a2;
+    --line: #2a313c;
+    --line-soft: #222831;
+    --accent: #3cbf9c;
+    --accent-ink: #0b1712;
+    --accent-soft: #15322b;
+    --mark: rgba(255, 210, 74, 0.17);
+    --mark-edge: #e3b341;
+    --ok: #4cc38a;
+    --ok-soft: #13301f;
+    --bad: #f97066;
+    --bad-soft: #3a1714;
+    --series-ast: #25ad8b;
+    --series-fixed: #c47331;
+    --code-bg: #12161c;
+    --tok-kw: #c79bf2;
+    --tok-str: #7ed6a0;
+    --tok-com: #6f7885;
+    --tok-num: #f0a868;
+    --tok-def: #8cb4ff;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  font: 400 15px/1.55 var(--font);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: var(--accent); }
+code, pre, .path, .mono { font-family: var(--mono); }
+h1 { font-size: 24px; line-height: 1.25; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 18px; line-height: 1.3; font-weight: 600; margin: 28px 0 10px; }
+h3 { font-size: 15px; font-weight: 600; margin: 18px 0 8px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ------------------------------------------------------------ top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 18px;
+  height: 56px; padding: 0 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 9px; color: var(--ink); text-decoration: none; font-weight: 600; font-size: 16px; }
+.brand svg { width: 26px; height: 26px; }
+.brand-bg { fill: var(--accent); }
+.brand-mark { fill: #ffe27a; }
+.repo-pick select {
+  appearance: none; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7380' stroke-width='1.4' fill='none'/%3E%3C/svg%3E") no-repeat right 10px center / 10px;
+  padding: 6px 30px 6px 10px; font-family: var(--mono); font-size: 13px; cursor: pointer;
+}
+.tabs { display: flex; gap: 2px; height: 100%; }
+.tabs button {
+  border: 0; background: none; padding: 0 12px; cursor: pointer; color: var(--muted);
+  font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.model-status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.model-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.model-status.offline .dot { background: var(--mark-edge); }
+.model-status b { color: var(--ink); font-weight: 500; font-family: var(--mono); font-size: 12.5px; }
+
+/* --------------------------------------------------------------- shell */
+.shell { display: block; }
+main { padding: 28px 24px 80px; transition: margin-right .2s ease; }
+.viewer-open main { margin-right: var(--viewer-w); }
+.tab { max-width: 860px; margin: 0 auto; }
+#tab-compare, #tab-eval { max-width: 1120px; }
+.section-head { margin-bottom: 18px; }
+.section-head p { margin: 0; color: var(--muted); max-width: 70ch; }
+
+/* ----------------------------------------------------------- ask form */
+.ask-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 14px 10px; }
+.ask-card textarea {
+  width: 100%; border: 0; resize: vertical; min-height: 52px; outline: none; background: transparent;
+  font-size: 17px; line-height: 1.45; padding: 2px 2px 8px;
+}
+.ask-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.seg { display: inline-flex; background: var(--bg); border-radius: 8px; padding: 2px; }
+.seg button { border: 0; background: none; padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.seg button[aria-checked="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
+.select-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+select, input[type="text"], input[type="url"] {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 6px 10px;
+}
+.primary {
+  margin-left: auto; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+  padding: 8px 18px; font-weight: 600; cursor: pointer;
+}
+.primary:hover { filter: brightness(1.08); }
+.primary:disabled { opacity: .55; cursor: progress; }
+.secondary { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.secondary:hover { border-color: var(--muted); }
+.hint { margin: 8px 2px 0; font-size: 13px; color: var(--muted); }
+
+.examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 6px; }
+.examples button {
+  border: 1px dashed var(--line); background: none; border-radius: 999px; padding: 5px 12px;
+  font-size: 13px; color: var(--ink-2); cursor: pointer; text-align: left;
+}
+.examples button:hover { border-style: solid; border-color: var(--accent); color: var(--ink); }
+.examples .shuffle { border-style: solid; color: var(--muted); }
+
