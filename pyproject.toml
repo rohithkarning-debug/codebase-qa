@@ -1,0 +1,22 @@
+[project]
+name = "codebase-qa"
+version = "1.0.0"
+description = "Ask questions about a GitHub repository; answers link to exact files and lines."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Rohith" },
+  { name = "Siddhardha" },
+  { name = "Rohanth" },
+  { name = "Nischkal" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["data", "results", ".venv", "venv", "node_modules"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::PendingDeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["data"]

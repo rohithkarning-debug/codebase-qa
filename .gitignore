@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Generated data (cloned repos, indexes, model + LLM caches)
+data/
+results/answers_detail.jsonl
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
