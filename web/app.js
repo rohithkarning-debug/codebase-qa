@@ -208,3 +208,184 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeViewer(); });
 $("#viewerClose").addEventListener("click", closeViewer);
 
+/* ------------------------------------------------------------- top bar */
+function renderModelStatus() {
+  const llm = state.config.llm;
+  const el = $("#modelStatus");
+  el.classList.toggle("offline", llm.offline);
+  if (llm.offline) {
+    el.innerHTML = `<span class="dot"></span>Offline mode`;
+    el.title = "No LLM API key found, so answers are assembled from search results. Add GEMINI_API_KEY or GROQ_API_KEY to .env and restart.";
+  } else {
+    el.innerHTML = `<span class="dot"></span><b>${esc(llm.model)}</b>`;
+    el.title = `Answers by ${llm.name}`;
+  }
+}
+function renderRepoSelect() {
+  const sel = $("#repoSelect");
+  sel.innerHTML = state.repos.map((r) => {
+    const ready = r.cloned && r.indexes && Object.keys(r.indexes).length;
+    return `<option value="${esc(r.name)}">${esc(r.name)}${ready ? "" : " (not indexed)"}</option>`;
+  }).join("");
+  if (!state.repos.some((r) => r.name === state.repo)) state.repo = state.repos[0]?.name || "";
+  sel.value = state.repo;
+}
+$("#repoSelect").addEventListener("change", (e) => {
+  state.repo = e.target.value;
+  localStorage.setItem("cqa.repo", state.repo);
+  renderExamples();
+  fillCompareQuestions();
+});
+
+/* ---------------------------------------------------------------- tabs */
+function showTab(name) {
+  if (!["ask", "compare", "eval", "repos"].includes(name)) name = "ask";
+  $$(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  $$(".tab").forEach((t) => (t.hidden = t.id !== `tab-${name}`));
+  if (name === "eval") renderEval();
+  if (name === "repos") renderRepos();
+  if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
+}
+$$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+
+/* ----------------------------------------------------------------- ask */
+function bindSeg(id, key, after) {
+  $$(`#${id} button`).forEach((b) => b.addEventListener("click", () => {
+    $$(`#${id} button`).forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+    state[key] = b.dataset.value;
+    if (after) after();
+  }));
+}
+bindSeg("modeSeg", "mode", () => ($("#modeHint").textContent = MODE_HINT[state.mode]));
+bindSeg("chunkSeg", "chunker");
+$("#retrieverSel").addEventListener("change", (e) => (state.retriever = e.target.value));
+$("#modeHint").textContent = MODE_HINT.agent;
+
+function renderExamples() {
+  const qs = state.questions.filter((q) => q.repo === state.repo);
+  const box = $("#examples");
+  if (!qs.length) {
+    box.innerHTML = ["Where is authentication handled?", "Explain the main entry point.", "How are errors handled?"]
+      .map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+  } else {
+    box.innerHTML = shuffle(qs).slice(0, 4).map((q) => `<button type="button" data-q="${esc(q.question)}">${esc(q.question)}</button>`).join("")
+      + `<button type="button" class="shuffle" data-shuffle="1">More examples</button>`;
+  }
+}
+$("#examples").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.shuffle) return renderExamples();
+  $("#question").value = b.dataset.q;
+  ask(b.dataset.q);
+});
+$("#question").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#askForm").requestSubmit(); }
+});
+$("#askForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#question").value.trim();
+  if (q.length >= 3) ask(q);
+});
+
+function stepInput(action, input) {
+  if (!input) return "";
+  if (action === "search_code") return `“${esc(input.query || input._ || "")}”`;
+  if (action === "grep") return `/${esc(input.pattern || input._ || "")}/${input.path ? " in " + esc(input.path) : ""}`;
+  if (action === "find_symbol") return esc(input.name || input._ || "");
+  if (action === "list_dir") return esc(input.path || input._ || "/");
+  return esc(JSON.stringify(input));
+}
+function linkObservation(text, repo) {
+  let html = esc(text);
+  html = html.replace(/([\w./-]+\.(?:py|js|jsx|ts|tsx|java|go|rs|rb|c|h|cpp|cs|php|kt)):L(\d+)-L(\d+)/g,
+    (m, p, s, e) => citeChip(repo, p, +s, +e));
+  html = html.replace(/^([\w./-]+\.(?:py|js|jsx|ts|tsx|java|go|rs|rb|c|h|cpp|cs|php|kt)):(\d+):/gm,
+    (m, p, n) => citeChip(repo, p, +n, +n) + ":");
+  return html;
+}
+
+async function ask(question) {
+  if (!state.repo) return toast("Add a repository first (Repositories tab).");
+  const btn = $("#askBtn");
+  btn.disabled = true;
+  const repo = state.repo;
+  const art = document.createElement("article");
+  art.className = "qa";
+  art.innerHTML = `
+    <h2 class="qa-q">${esc(question)}</h2>
+    <div class="qa-meta">
+      <span class="tag">${esc(repo)}</span><span class="tag">${LABELS[state.mode]}</span>
+      <span class="tag">${LABELS[state.chunker]}</span><span class="tag">${LABELS[state.retriever]}</span>
+    </div>
+    <ol class="steps" hidden></ol>
+    <div class="working"><span class="spinner"></span><span>${state.mode === "agent" ? "Searching the code" : "Retrieving code and writing the answer"}</span></div>
+    <div class="answer-slot"></div>`;
+  $("#thread").prepend(art);
+  const steps = $(".steps", art), working = $(".working", art), slot = $(".answer-slot", art);
+  const setWorking = (msg) => { working.hidden = !msg; if (msg) $("span:last-child", working).textContent = msg; };
+
+  const handle = (ev) => {
+    if (ev.type === "step") {
+      steps.hidden = false;
+      const li = document.createElement("li");
+      li.className = "step";
+      li.dataset.n = ev.step;
+      const loc = ev.action === "open_file" && ev.locations?.[0]
+        ? citeChip(repo, ev.locations[0].path, ev.locations[0].start, ev.locations[0].end) : stepInput(ev.action, ev.input);
+      li.innerHTML = `
+        <div class="step-head"><span class="tool">${esc(ev.action)}</span><span class="tool-input">${loc}</span></div>
+        ${ev.thought ? `<p class="thought">${esc(ev.thought)}</p>` : ""}
+        <details><summary>Result</summary><pre>${linkObservation(ev.observation || "", repo)}</pre></details>`;
+      steps.append(li);
+      setWorking("Deciding the next step");
+    } else if (ev.type === "answer") {
+      setWorking("");
+      renderAnswer(slot, repo, ev);
+      const first = (ev.citations || []).find((c) => c.valid && c.start);
+      if (first) openViewer(repo, first.path, first.start, first.end);
+    } else if (ev.type === "error") {
+      setWorking("");
+      slot.innerHTML = `<div class="answer error"><p><strong>Could not answer.</strong> ${esc(ev.message)}</p></div>`;
+    }
+  };
+
+  try {
+    const res = await fetch("/api/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, question, mode: state.mode, chunker: state.chunker, retriever: state.retriever }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim()) handle(JSON.parse(line));
+      }
+    }
+    if (buf.trim()) handle(JSON.parse(buf));
+  } catch (err) {
+    handle({ type: "error", message: err.message });
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderAnswer(slot, repo, ev) {
+  const cites = ev.citations || [];
+  const sources = cites.filter((c) => c.valid).map((c) =>
+    citeChip(repo, c.path, c.start, c.end) + (c.url ? `<a class="icon-btn" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open on GitHub" aria-label="Open ${esc(c.path)} on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3H3v10h10v-3M9 2h5v5M14 2 7 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>` : "")).join("");
+  const facts = [ev.steps ? `${ev.steps} tool call${ev.steps === 1 ? "" : "s"}` : null, ev.seconds != null ? `${ev.seconds}s` : null, ev.llm].filter(Boolean).join(", ");
+  slot.innerHTML = `<div class="answer">${renderMarkdown(ev.answer, repo, cites)}
+    <div class="answer-foot">${sources ? `<span>Sources</span>${sources}` : "<span>No file citations in this answer.</span>"}
+    <span style="margin-left:auto">${esc(facts)}</span></div></div>`;
+}
+
