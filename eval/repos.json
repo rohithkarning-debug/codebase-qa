@@ -1,0 +1,5 @@
+[
+  {"name": "requests", "url": "https://github.com/psf/requests", "ref": "v2.32.3", "description": "HTTP for Humans - the classic Python HTTP client"},
+  {"name": "flask", "url": "https://github.com/pallets/flask", "ref": "3.0.3", "description": "Lightweight WSGI web framework"},
+  {"name": "starlette", "url": "https://github.com/encode/starlette", "ref": "0.38.2", "description": "Lightweight ASGI framework / toolkit"}
+]
