@@ -103,7 +103,7 @@ in `data/cache/llm`, and an interrupted run resumes where it stopped. Use `--lim
 | **Rohith**  | Configuration, syntax-tree (AST) and fixed-size chunking, ReAct agent and its tools, RAG baseline, test fixtures, README, architecture | `cqa/config.py`, `cqa/chunking/`, `cqa/agent/`, `tests/conftest.py`, `tests/test_chunking.py`, `tests/test_agent.py`, `docs/ARCHITECTURE.md` |
 | **Siddhardha** | Repository ingestion, multi-provider LLM client, FastAPI backend with streaming answers and indexing jobs, CLI and demo scripts | `cqa/repo.py`, `cqa/llm.py`, `cqa/cli.py`, `server/`, `run_demo.*`, `Makefile`, `tests/test_repo.py`, `tests/test_llm.py`, `tests/test_api.py`, `docs/API.md` |
 | **Rohanth** | Web UI (live agent trace, code viewer, compare and evaluation dashboards), citation parsing and links, demo script | `web/`, `cqa/citations.py`, `tests/test_citations.py`, `tests/test_frontend.py`, `docs/DEMO.md` |
-| **Nischkal** | Code vs general embedding models, search index (dense, BM25, hybrid), 50-question test set, metrics, LLM judge, evaluation runners and report | `cqa/embeddings.py`, `cqa/index.py`, `eval/`, `tests/test_retrieval.py`, `tests/test_metrics.py`, `tests/test_dataset.py`, `docs/EVALUATION.md` |
+| **Nishkal** | Code vs general embedding models, search index (dense, BM25, hybrid), 50-question test set, metrics, LLM judge, evaluation runners and report | `cqa/embeddings.py`, `cqa/index.py`, `eval/`, `tests/test_retrieval.py`, `tests/test_metrics.py`, `tests/test_dataset.py`, `docs/EVALUATION.md` |
 
 ## Tests
 
