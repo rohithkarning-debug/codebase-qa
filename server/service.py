@@ -129,3 +129,92 @@ def start_index(name: str, embedders: list[str] | None = None) -> dict:
     return job
 
 
+# --------------------------------------------------------------- search
+def search(name: str, query: str, chunker: str, retriever: str, k: int = 5) -> list[dict]:
+    spec = get_repo(name)
+    idx = get_index(spec, chunker)
+    return [h.to_dict(spec) for h in idx.search(query, retriever, k=k)]
+
+
+def gold_for(name: str, question: str) -> list[dict]:
+    """If the query is one of the 50 evaluation questions, return its gold spans."""
+    try:
+        from eval.dataset import load_raw, resolve_gold
+    except ImportError:
+        return []
+    for q in load_raw():
+        if q["repo"] == name and q["question"].strip().lower() == question.strip().lower():
+            try:
+                return [resolve_gold(name, g["path"], g["symbol"]).to_dict() for g in q["gold"]]
+            except Exception:
+                return []
+    return []
+
+
+def compare(name: str, query: str, k: int = 5) -> dict:
+    from eval.metrics import is_hit
+    from eval.dataset import GoldSpan
+    gold = gold_for(name, query)
+    gold_objs = [GoldSpan(g["path"], g["symbol"], g["start"], g["end"]) for g in gold]
+    results, errors = {}, {}
+    for ch in config.CHUNKERS:
+        for ret in config.RETRIEVERS:
+            key = f"{ch}+{ret}"
+            try:
+                hits = search(name, query, ch, ret, k)
+            except Exception as e:
+                errors[key] = f"{type(e).__name__}: {e}"
+                continue
+            for h in hits:
+                h["hit"] = bool(gold_objs) and is_hit(h["path"], h["start_line"], h["end_line"], gold_objs)
+            results[key] = hits
+    return {"query": query, "gold": gold, "results": results, "errors": errors}
+
+
+# ------------------------------------------------------------------ ask
+def llm_info() -> dict:
+    s = config.llm_settings()
+    available = [p for p, (_, _, env) in config.LLM_PRESETS.items()
+                 if p == "offline" or (env and os.environ.get(env)) or p == "ollama" and s.provider == "ollama"]
+    return {"provider": s.provider, "model": s.model, "name": f"{s.provider}:{s.model}",
+            "offline": s.provider == "offline", "available": available}
+
+
+def ask_stream(name: str, question: str, mode: str, chunker: str, retriever: str,
+               provider: str | None = None) -> Iterator[dict]:
+    try:
+        spec = get_repo(name)
+        get_index(spec, chunker)  # make sure the index exists before the agent starts
+        if mode == "rag":
+            llm = make_llm(provider, offline_policy=offline_rag_policy)
+            yield {"type": "start", "question": question, "repo": name, "llm": llm.name}
+            yield RAGAnswerer(spec, llm, chunker, retriever).run(question)
+        else:
+            llm = make_llm(provider, offline_policy=offline_react_policy)
+            yield from ReActAgent(spec, llm, chunker, retriever).run_stream(question)
+    except LLMError as e:
+        yield {"type": "error", "message": str(e)}
+    except Exception as e:
+        traceback.print_exc()
+        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+
+
+# ----------------------------------------------------------------- eval
+def eval_questions() -> list[dict]:
+    try:
+        from eval.dataset import load_raw
+        return [{k: q[k] for k in ("id", "repo", "type", "question")} for q in load_raw()]
+    except Exception:
+        return []
+
+
+def eval_results() -> dict:
+    out = {}
+    for name in ("retrieval", "answers"):
+        p = config.RESULTS_DIR / f"{name}.json"
+        if p.exists():
+            data = json.loads(p.read_text())
+            if name == "retrieval":
+                data.pop("per_question", None)
+            out[name] = data
+    return out
